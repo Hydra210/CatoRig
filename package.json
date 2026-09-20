@@ -1,0 +1,15 @@
+{
+  "name": "catorig-proxy",
+  "version": "1.0.0",
+  "description": "Tiny proxy so CatoRig (Roblox Studio plugin) can reach catalog.roblox.com",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
