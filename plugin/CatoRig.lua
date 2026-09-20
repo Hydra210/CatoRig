@@ -22,19 +22,23 @@
 	  CFG.ProxyBaseUrl below to wherever that proxy is running.
 
 	  Category/Subcategory pairs have to belong to the same "family" or
-	  the API 400s — Category=1 ("All") does NOT accept every subcategory
-	  despite reading like it should. Accessories = Category 11. Clothing
-	  (Shirts/Pants/T-Shirts) is the part I'm least sure of: Roblox's docs
-	  say Category=3 with Subcategory 12/13/14, but that combo 400s in
-	  practice, and past devforum reports say clothing got reassigned to
-	  the "Classic*" subcategory numbers (56/57/55) at some point — that's
-	  what's set below. If clothing tabs still 400 after this, that's the
-	  next thing to try flipping in CFG.Categories.
+	  the API 400s — confirmed live: Category=11 (Accessories) rejects
+	  Subcategory 9 (Hats) and 10 (Faces) outright ("Category subcategory
+	  selection not supported"). Hats now uses Subcategory=54
+	  (HeadAccessories, the layered-clothing replacement); Faces uses
+	  Category=1 instead of 11 — that second one is still a guess, flag
+	  it if it 400s too. Clothing (Shirts/Pants/T-Shirts) uses the
+	  "Classic*" subcategory numbers (56/57/55) under Category=3, per
+	  past devforum reports of a similar reassignment — also unconfirmed
+	  from my end, so re-test after any change here.
 
-	  Roblox also caps a single request's Limit to 10, 28, or 30 — there's
-	  no way to ask for 100 in one call. To get a bigger "page," CatoRig
-	  chains CFG.BatchesPerPage requests together using the API's cursor
-	  pagination (see FetchPageAggregated below) before showing you a page.
+	  Roblox's catalog endpoint also rate-limits (HTTP 429) more
+	  aggressively than you'd expect, especially from a shared-IP host
+	  like Render — confirmed from a live deploy log. That's why
+	  BatchesPerPage is 1 instead of chaining several requests into a
+	  bigger page: fewer requests per click, at the cost of ~30 items
+	  per page instead of ~90. server.js also retries once on a 429
+	  before giving up.
 
 	  Thumbnails don't depend on any of this — they're loaded via the
 	  rbxthumb:// URI scheme, which talks to Roblox's CDN directly and
@@ -91,9 +95,9 @@ local CFG = {
 	},
 
 	Categories = {
-		{ Name = "Hats",       Field = "HatAccessory",      Category = 11, Sub = 9,  Multi = true  },
+		{ Name = "Hats",       Field = "HatAccessory",      Category = 11, Sub = 54, Multi = true  },
 		{ Name = "Hair",       Field = "HairAccessory",     Category = 11, Sub = 20, Multi = true  },
-		{ Name = "Faces",      Field = "Face",              Category = 11, Sub = 10, Multi = false },
+		{ Name = "Faces",      Field = "Face",              Category = 1,  Sub = 10, Multi = false },
 		{ Name = "Face Acc.",  Field = "FaceAccessory",     Category = 11, Sub = 21, Multi = true  },
 		{ Name = "Neck",       Field = "NeckAccessory",     Category = 11, Sub = 22, Multi = true  },
 		{ Name = "Shoulder",   Field = "ShoulderAccessory", Category = 11, Sub = 23, Multi = true  },
@@ -137,7 +141,11 @@ local CFG = {
 	},
 
 	BatchLimit = 30,      -- Roblox's per-request max (10, 28, or 30 only)
-	BatchesPerPage = 3,   -- chained together → ~90 items shown as one "page"
+	BatchesPerPage = 1,   -- kept at 1 — Roblox's catalog endpoint rate-limits
+	                      -- (429) surprisingly fast, especially from a shared
+	                      -- host IP like Render's. Chaining 3 requests per
+	                      -- page load made that worse, not better. Prev/Next
+	                      -- still work, just 30 items per page instead of ~90.
 	PreviewDebounceSeconds = 0.15,
 }
 

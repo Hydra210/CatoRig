@@ -26,13 +26,38 @@ const UPSTREAM_HEADERS = {
 	"Accept": "application/json",
 };
 
+// catalog.roblox.com rate-limits (429) more aggressively than you'd expect,
+// especially from a shared-IP host like Render. One retry with a short
+// backoff smooths over the occasional transient hit; it won't help if
+// Roblox is rate-limiting the host IP itself for an extended stretch.
+const MAX_RETRIES = 1;
+const RETRY_DELAY_MS = 1200;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function fetchWithRetry(url) {
+	let lastResult = null;
+	for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+		const upstream = await fetch(url, { headers: UPSTREAM_HEADERS, signal: AbortSignal.timeout(10_000) });
+		const body = await upstream.text();
+		lastResult = { upstream, body };
+
+		if (upstream.status !== 429) {
+			return lastResult;
+		}
+		if (attempt < MAX_RETRIES) {
+			console.warn(`[catorig-proxy] 429, retrying in ${RETRY_DELAY_MS}ms — ${url}`);
+			await sleep(RETRY_DELAY_MS);
+		}
+	}
+	return lastResult;
+}
+
 app.get("/catalog", async (req, res) => {
 	const query = new URLSearchParams(req.query).toString();
 	const url = `https://catalog.roblox.com/v1/search/items/details?${query}`;
 
 	try {
-		const upstream = await fetch(url, { headers: UPSTREAM_HEADERS, signal: AbortSignal.timeout(10_000) });
-		const body = await upstream.text();
+		const { upstream, body } = await fetchWithRetry(url);
 
 		if (!upstream.ok) {
 			console.error(`[catorig-proxy] upstream ${upstream.status} for ${url}`);
