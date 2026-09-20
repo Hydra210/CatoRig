@@ -34,22 +34,51 @@ const MAX_RETRIES = 1;
 const RETRY_DELAY_MS = 1200;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function fetchWithRetry(url) {
-	let lastResult = null;
-	for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-		const upstream = await fetch(url, { headers: UPSTREAM_HEADERS, signal: AbortSignal.timeout(10_000) });
-		const body = await upstream.text();
-		lastResult = { upstream, body };
+// Backstop rate limiting: serializes every outbound call to
+// catalog.roblox.com through one queue with a minimum gap between them,
+// regardless of how many /catalog requests hit this proxy concurrently.
+// The Lua plugin also debounces + spaces its own requests, but this
+// guarantees the floor even if that's bypassed (multiple Studio instances,
+// a bug, whatever).
+const MIN_UPSTREAM_GAP_MS = 700;
+let upstreamQueue = Promise.resolve();
+let lastUpstreamCallAt = 0;
 
-		if (upstream.status !== 429) {
-			return lastResult;
+function queueUpstream(fn) {
+	const run = async () => {
+		const wait = Math.max(0, MIN_UPSTREAM_GAP_MS - (Date.now() - lastUpstreamCallAt));
+		if (wait > 0) {
+			await sleep(wait);
 		}
-		if (attempt < MAX_RETRIES) {
-			console.warn(`[catorig-proxy] 429, retrying in ${RETRY_DELAY_MS}ms — ${url}`);
-			await sleep(RETRY_DELAY_MS);
+		lastUpstreamCallAt = Date.now();
+		return fn();
+	};
+	const result = upstreamQueue.then(run, run);
+	upstreamQueue = result.then(
+		() => {},
+		() => {}
+	);
+	return result;
+}
+
+async function fetchWithRetry(url) {
+	return queueUpstream(async () => {
+		let lastResult = null;
+		for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+			const upstream = await fetch(url, { headers: UPSTREAM_HEADERS, signal: AbortSignal.timeout(10_000) });
+			const body = await upstream.text();
+			lastResult = { upstream, body };
+
+			if (upstream.status !== 429) {
+				return lastResult;
+			}
+			if (attempt < MAX_RETRIES) {
+				console.warn(`[catorig-proxy] 429, retrying in ${RETRY_DELAY_MS}ms — ${url}`);
+				await sleep(RETRY_DELAY_MS);
+			}
 		}
-	}
-	return lastResult;
+		return lastResult;
+	});
 }
 
 app.get("/catalog", async (req, res) => {
@@ -86,7 +115,9 @@ app.get("/catalog", async (req, res) => {
 // matches or runs out of pages.
 const FILTER_TARGET_COUNT = 24;
 const FILTER_MAX_UPSTREAM_PAGES = 6;
-const FILTER_PAGE_DELAY_MS = 350;
+// No separate per-page delay here anymore — queueUpstream (used inside
+// fetchWithRetry) already enforces MIN_UPSTREAM_GAP_MS between every
+// outbound call, including the chained ones this loop makes.
 
 function extractAssetTypeId(item) {
 	const t = item && item.assetType;
@@ -152,7 +183,6 @@ async function handleFilteredSearch(res, assetTypeId, baseParams) {
 		if (!nextCursor || collected.length >= FILTER_TARGET_COUNT) {
 			break;
 		}
-		await sleep(FILTER_PAGE_DELAY_MS);
 	}
 
 	console.log(`[catorig-proxy] filtered search: ${collected.length} matches for AssetTypeId=${assetTypeId}`);

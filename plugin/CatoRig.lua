@@ -89,10 +89,9 @@ type Filters = {
 
 local CFG = {
 
-	-- Point this at wherever catorig-proxy/server.js is running.
-	-- "http://localhost:3000" while you're running it yourself for dev;
-	-- swap in a deployed URL once it's hosted somewhere real.
-	ProxyBaseUrl = "http://localhost:3000",
+	-- Points at your deployed Render proxy. If you ever run it locally
+	-- instead for testing, swap this to "http://localhost:3000".
+	ProxyBaseUrl = "https://catorig.onrender.com",
 
 	Theme = {
 		Background = Color3.fromRGB(10, 10, 10),
@@ -160,6 +159,15 @@ local CFG = {
 	                      -- page load made that worse, not better. Prev/Next
 	                      -- still work, just 30 items per page instead of ~90.
 	PreviewDebounceSeconds = 0.15,
+
+	-- Client-side rate limiting. TabDebounceSeconds: how long to wait after
+	-- the last tab/filter click before actually firing a request — rapid
+	-- clicks collapse into a single request for wherever you land, instead
+	-- of firing one per click. MinRequestGapSeconds: the floor on time
+	-- between actual outgoing catalog requests, enforced even for genuinely
+	-- separate requests (switching tabs slowly, prev/next, etc).
+	TabDebounceSeconds = 0.35,
+	MinRequestGapSeconds = 1.5,
 }
 
 --// STATE ///----------------------------------------------------------
@@ -893,13 +901,37 @@ local currentLoadToken = 0
 -- Loads one aggregated "page" (pageIndex) starting from the given cursor
 -- and renders it. Doesn't touch State.PageHistory[1] / the reset logic —
 -- callers (populateGrid, prev/next handlers) manage that.
+local lastRequestFinishedAt = 0 :: number
+
 local function loadPage(def: CategoryDef, pageIndex: number, cursor: string | boolean?)
 	currentLoadToken += 1
 	local myToken = currentLoadToken
-	statusLabel.Text = "loading " .. def.Name .. "…"
+	statusLabel.Text = "queued: " .. def.Name .. "…"
 
 	task.spawn(function()
+		-- Debounce: if you click another tab/filter before this fires, the
+		-- token check below aborts this one — rapid clicks collapse into a
+		-- single request instead of one per click.
+		task.wait(CFG.TabDebounceSeconds)
+		if myToken ~= currentLoadToken then
+			return
+		end
+
+		-- Hard floor on spacing between actual outgoing requests, even for
+		-- genuinely distinct ones (slow tab switches, prev/next, filters).
+		local waitNeeded = (lastRequestFinishedAt + CFG.MinRequestGapSeconds) - os.clock()
+		if waitNeeded > 0 then
+			statusLabel.Text = ("rate limit — waiting %.1fs…"):format(waitNeeded)
+			task.wait(waitNeeded)
+			if myToken ~= currentLoadToken then
+				return -- superseded while we were waiting out the gap
+			end
+		end
+
+		statusLabel.Text = "loading " .. def.Name .. "…"
 		local items, nextCursor, errorMsg = fetchPageAggregated(def, currentFilters(), cursor)
+		lastRequestFinishedAt = os.clock()
+
 		if myToken ~= currentLoadToken then
 			return -- a newer request superseded this one
 		end
