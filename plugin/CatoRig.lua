@@ -57,7 +57,16 @@ type CategoryDef = {
 	Name: string,
 	Field: string,       -- HumanoidDescription property this category fills
 	Category: number,    -- catalog "Category" query param
-	Sub: number,          -- catalog "Subcategory" query param
+	Sub: number?,          -- catalog "Subcategory" query param — omit when
+	                       -- using AssetTypeId instead (see below)
+	AssetTypeId: number?,  -- workaround for types Roblox's Subcategory filter
+	                       -- rejects outright (Hats/Hair/Faces/Shirts/Pants/
+	                       -- T-Shirts all 400 with "Category subcategory
+	                       -- selection not supported" — a long-standing,
+	                       -- never-fixed gap, not a wrong number on my part).
+	                       -- When set, the proxy searches broadly by Category
+	                       -- alone and filters results by each item's own
+	                       -- assetType field instead.
 	Multi: boolean,       -- true = comma-joined list (accessories), false = single id
 }
 
@@ -94,19 +103,23 @@ local CFG = {
 		DimGray    = Color3.fromRGB(85, 85, 85),
 	},
 
+	-- Confirmed-working pairings use Subcategory directly (Category=11,
+	-- specific accessory type). The types Roblox's Subcategory filter
+	-- outright rejects (Hats, Hair, Faces, Shirts, Pants, T-Shirts) use
+	-- AssetTypeId instead — see the comment on that field above.
 	Categories = {
-		{ Name = "Hats",       Field = "HatAccessory",      Category = 11, Sub = 54, Multi = true  },
-		{ Name = "Hair",       Field = "HairAccessory",     Category = 11, Sub = 20, Multi = true  },
-		{ Name = "Faces",      Field = "Face",              Category = 1,  Sub = 10, Multi = false },
-		{ Name = "Face Acc.",  Field = "FaceAccessory",     Category = 11, Sub = 21, Multi = true  },
-		{ Name = "Neck",       Field = "NeckAccessory",     Category = 11, Sub = 22, Multi = true  },
-		{ Name = "Shoulder",   Field = "ShoulderAccessory", Category = 11, Sub = 23, Multi = true  },
-		{ Name = "Front",      Field = "FrontAccessory",    Category = 11, Sub = 24, Multi = true  },
-		{ Name = "Back",       Field = "BackAccessory",     Category = 11, Sub = 25, Multi = true  },
-		{ Name = "Waist",      Field = "WaistAccessory",    Category = 11, Sub = 26, Multi = true  },
-		{ Name = "Shirts",     Field = "Shirt",             Category = 3,  Sub = 56, Multi = false },
-		{ Name = "Pants",      Field = "Pants",             Category = 3,  Sub = 57, Multi = false },
-		{ Name = "T-Shirts",   Field = "GraphicTShirt",     Category = 3,  Sub = 55, Multi = false },
+		{ Name = "Hats",       Field = "HatAccessory",      Category = 11, AssetTypeId = 8,  Multi = true  },
+		{ Name = "Hair",       Field = "HairAccessory",     Category = 11, AssetTypeId = 41, Multi = true  },
+		{ Name = "Faces",      Field = "Face",              Category = 1,  AssetTypeId = 18, Multi = false },
+		{ Name = "Face Acc.",  Field = "FaceAccessory",     Category = 11, Sub = 21,          Multi = true  },
+		{ Name = "Neck",       Field = "NeckAccessory",     Category = 11, Sub = 22,          Multi = true  },
+		{ Name = "Shoulder",   Field = "ShoulderAccessory", Category = 11, Sub = 23,          Multi = true  },
+		{ Name = "Front",      Field = "FrontAccessory",    Category = 11, Sub = 24,          Multi = true  },
+		{ Name = "Back",       Field = "BackAccessory",     Category = 11, Sub = 25,          Multi = true  },
+		{ Name = "Waist",      Field = "WaistAccessory",    Category = 11, Sub = 26,          Multi = true  },
+		{ Name = "Shirts",     Field = "Shirt",             Category = 3,  AssetTypeId = 11, Multi = false },
+		{ Name = "Pants",      Field = "Pants",             Category = 3,  AssetTypeId = 12, Multi = false },
+		{ Name = "T-Shirts",   Field = "GraphicTShirt",     Category = 3,  AssetTypeId = 2,  Multi = false },
 	} :: { CategoryDef },
 
 	SortOptions = {
@@ -175,11 +188,19 @@ end
 local function buildCatalogUrl(def: CategoryDef, filters: Filters, cursor: string | boolean?): string
 	local params = {
 		Category = def.Category,
-		Subcategory = def.Sub,
 		Limit = CFG.BatchLimit,
 		SortType = filters.SortType,
 		SortAggregation = filters.SortAggregation,
 	}
+	if def.Sub then
+		params.Subcategory = def.Sub
+	end
+	if def.AssetTypeId then
+		-- Tells the proxy to search broadly by Category alone and filter
+		-- the results by assetType itself, bypassing Roblox's broken
+		-- Subcategory validation for this item type.
+		params.AssetTypeId = def.AssetTypeId
+	end
 	if filters.Keyword ~= "" then
 		params.Keyword = HttpService:UrlEncode(filters.Keyword)
 	end

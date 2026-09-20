@@ -53,10 +53,15 @@ async function fetchWithRetry(url) {
 }
 
 app.get("/catalog", async (req, res) => {
-	const query = new URLSearchParams(req.query).toString();
-	const url = `https://catalog.roblox.com/v1/search/items/details?${query}`;
+	const { AssetTypeId, ...rest } = req.query;
 
 	try {
+		if (AssetTypeId) {
+			return await handleFilteredSearch(res, AssetTypeId, rest);
+		}
+
+		const query = new URLSearchParams(rest).toString();
+		const url = `https://catalog.roblox.com/v1/search/items/details?${query}`;
 		const { upstream, body } = await fetchWithRetry(url);
 
 		if (!upstream.ok) {
@@ -67,10 +72,92 @@ app.get("/catalog", async (req, res) => {
 
 		res.type("application/json").send(body);
 	} catch (err) {
-		console.error(`[catorig-proxy] request failed for ${url}:`, err);
+		console.error(`[catorig-proxy] request failed:`, err);
 		res.status(502).json({ error: "proxy request failed", detail: String(err) });
 	}
 });
+
+// Workaround for item types Roblox's Subcategory filter rejects outright
+// (Hats, Hair, Faces, Shirts, Pants, T-Shirts — see the comment on
+// CategoryDef.AssetTypeId in CatoRig.lua). Searches broadly by Category
+// alone, then filters the results by each item's own assetType field.
+// Since most results in a broad search won't match, this chains multiple
+// upstream requests (following the cursor) until it collects enough
+// matches or runs out of pages.
+const FILTER_TARGET_COUNT = 24;
+const FILTER_MAX_UPSTREAM_PAGES = 6;
+const FILTER_PAGE_DELAY_MS = 350;
+
+function extractAssetTypeId(item) {
+	const t = item && item.assetType;
+	if (t && typeof t === "object") {
+		return t.id;
+	}
+	return t;
+}
+
+async function handleFilteredSearch(res, assetTypeId, baseParams) {
+	let cursor = baseParams.Cursor;
+	const searchParams = { ...baseParams };
+	delete searchParams.Cursor;
+
+	const collected = [];
+	let nextCursor = null;
+	let loggedSampleKeys = false;
+
+	for (let page = 0; page < FILTER_MAX_UPSTREAM_PAGES; page++) {
+		const params = new URLSearchParams(searchParams);
+		if (cursor) {
+			params.set("Cursor", cursor);
+		}
+		const url = `https://catalog.roblox.com/v1/search/items/details?${params.toString()}`;
+		const { upstream, body } = await fetchWithRetry(url);
+
+		if (!upstream.ok) {
+			console.error(`[catorig-proxy] filtered search upstream ${upstream.status} for ${url}`);
+			console.error(`[catorig-proxy] upstream body: ${body.slice(0, 500)}`);
+			if (collected.length === 0) {
+				return res.status(upstream.status).type("application/json").send(body);
+			}
+			break;
+		}
+
+		let parsed;
+		try {
+			parsed = JSON.parse(body);
+		} catch (err) {
+			console.error(`[catorig-proxy] bad JSON in filtered search — ${url}`);
+			break;
+		}
+
+		const data = parsed.data || [];
+		if (!loggedSampleKeys && data[0]) {
+			// One-time debug line — if filtering keeps returning 0 matches,
+			// check this against extractAssetTypeId() above: the field name
+			// or shape may not be what's assumed here.
+			console.log(`[catorig-proxy] sample item keys: ${Object.keys(data[0]).join(", ")}`);
+			console.log(`[catorig-proxy] sample assetType value: ${JSON.stringify(data[0].assetType)}`);
+			loggedSampleKeys = true;
+		}
+
+		for (const item of data) {
+			if (String(extractAssetTypeId(item)) === String(assetTypeId)) {
+				collected.push(item);
+			}
+		}
+
+		nextCursor = parsed.nextPageCursor || null;
+		cursor = nextCursor;
+
+		if (!nextCursor || collected.length >= FILTER_TARGET_COUNT) {
+			break;
+		}
+		await sleep(FILTER_PAGE_DELAY_MS);
+	}
+
+	console.log(`[catorig-proxy] filtered search: ${collected.length} matches for AssetTypeId=${assetTypeId}`);
+	res.json({ data: collected, nextPageCursor: cursor || undefined });
+}
 
 app.get("/", (_req, res) => {
 	res.send("CatoRig proxy is running. Point the plugin's CFG.ProxyBaseUrl here.");
