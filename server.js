@@ -36,6 +36,7 @@ app.get("/catalog", async (req, res) => {
 
 		if (!upstream.ok) {
 			console.error(`[catorig-proxy] upstream ${upstream.status} for ${url}`);
+			console.error(`[catorig-proxy] upstream body: ${body.slice(0, 500)}`);
 			return res.status(upstream.status).type("application/json").send(body);
 		}
 
